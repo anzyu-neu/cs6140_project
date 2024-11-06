@@ -33,14 +33,17 @@ closenessThreshold = 6
 # Controls the rest days value that we use for season starting games
 firstGameRest = 50
 
-# TODO: Decide how to calculate locations. BoxScores do not track locations, they track city home games.
-#  However, the 'City' field of a team isn't accurate (the Golden State Warrior's city name is 'Golden State').
-#  If the city names are nonsensical, it might make the most sense to just use TeamIds instead.
-
-# A dictionary of City names to (lat, lon) pairs
-CITY_LOCATIONS = {'Atlanta': (33.7501, -84.3885), 'Boston': (42.3601, -71.0589), 'Cleveland': (41.4993, -81.6944),
-                  'New Orleans': (29.9509, -90.0758), 'Chicago': (41.8781, -87.6298), 'Dallas': (32.7767, -96.7970),
-                  'Denver': (39.7392, -104.9903), }
+# A dictionary of TeamIds to (lat, lon) pairs
+CITY_LOCATIONS = {1610612737: (33.7501, -84.3885), 1610612738: (42.3601, -71.0589), 1610612739: (41.4993, -81.6944),
+                  1610612740: (29.9509, -90.0758), 1610612741: (41.8781, -87.6298), 1610612742: (32.7767, -96.7970),
+                  1610612743: (39.7392, -104.9903), 1610612744: (37.7749, -122.4194), 1610612745: (29.7601, -95.3701),
+                  1610612746: (34.0549, -118.2426), 1610612747: (34.0549, -118.2426), 1610612748: (25.7617, -80.1918),
+                  1610612749: (43.0389, -87.9065), 1610612750: (44.9778, -93.2650), 1610612751: (40.6782, -73.9442),
+                  1610612752: (40.7505, -73.9934), 1610612753: (28.5384, -81.3789), 1610612754: (39.7691, -86.1580),
+                  1610612755: (39.9526, -75.1652), 1610612756: (33.4484, -112.0740), 1610612757: (45.5152, -122.6784),
+                  1610612758: (38.5781, -121.4944), 1610612759: (29.4252, -98.4946), 1610612760: (35.4676, -97.5164),
+                  1610612761: (43.6532, -79.3832), 1610612762: (30.7608, -11.8910), 1610612763: (35.1495, -90.0490),
+                  1610612764: (38.9072, -77.0369), 1610612765: (42.3314, -83.0458), 1610612766: (35.2271, -80.8431)}
 
 
 # TODO: Find a way to deal with midseason coaching changes.
@@ -85,6 +88,11 @@ def generate_game_stats_per_team(game_box_score):
     return home_team_players_info, away_team_players_info
 
 
+def add_game_location(game_stats, home_team_id):
+    game_stats.at[0, 'GAME_LOCATION'] = home_team_id
+    return game_stats
+
+
 # Adds the scoring, W/L, and closeness information to each team's output vector from generate_game_stats_per_team.
 # Both vectors must be passed in in order to determine which team won/lost.
 def add_scoring_statistics(home_team_players_info, away_team_players_info, scores):
@@ -112,7 +120,7 @@ def pull_game_data(game_id):
          'defendedAtRimFieldGoalsMade', 'defendedAtRimFieldGoalsAttempted',
          'defendedAtRimFieldGoalPercentage']]
     summary = boxscoresummaryv2.BoxScoreSummaryV2(game_id=game_id).get_data_frames()
-    print(players_stats[1]['TEAM_CITY'].unique())
+    home_location = summary[0]['HOME_TEAM_ID'].values[0]
     officials = summary[2]
     scores = summary[5]
     team_ids = list(set(game_box_score['teamId']))
@@ -120,7 +128,15 @@ def pull_game_data(game_id):
     # TODO: Join on an already loaded First/Last name table of referee statistics
     # officials_lineup = pandas.DataFrame(officials[['FIRST_NAME', 'LAST_NAME', 'JERSEY_NUM']].values.flatten(), [''])
     home_team_result, away_team_result = add_scoring_statistics(home_team_players_info, away_team_players_info, scores)
+    home_team_result = add_game_location(home_team_result, home_location)
+    away_team_result = add_game_location(away_team_result, home_location)
     return [home_team_result, away_team_result]
+
+
+def distance_between_teams(team_id_1, team_id_2):
+    location_1 = CITY_LOCATIONS[team_id_1]
+    location_2 = CITY_LOCATIONS[team_id_2]
+    return distance.distance(location_1, location_2).miles
 
 
 # teams ONLY have 1 coach per season, so this is a major issue to work through. Currenlty, I am assuming that there
@@ -131,11 +147,13 @@ def pull_team_data(game_data: DataFrame, team_id):
     team_games.loc[:, 'CLOSE_WIN_PCT'] = 0
     team_games.loc[:, 'IS_BACK_TO_BACK'] = False
     team_games.loc[:, 'REST_DAYS'] = 0
+    team_games.loc[:, 'Distance'] = 0
     wins = 0
     close_wins = 0
     games_played = 0
     close_games_played = 0
     current_game_date = None
+    previous_game_location = team_id
     for index, row in team_games.iterrows():
         team_games.loc[index, 'WIN_PCT'] = (0 if games_played == 0 else wins / games_played)
         team_games.loc[index, 'CLOSE_WIN_PCT'] = (0 if close_games_played == 0 else close_wins / close_games_played)
@@ -144,6 +162,8 @@ def pull_team_data(game_data: DataFrame, team_id):
         rest_days = (firstGameRest if previous_game_date is None else (current_game_date - previous_game_date).days - 1)
         team_games.loc[index, 'IS_BACK_TO_BACK'] = (False if previous_game_date is None else rest_days == 0)
         team_games.loc[index, 'REST_DAYS'] = rest_days
+        team_games.loc[index, 'DISTANCE'] = distance_between_teams(previous_game_location, row['GAME_LOCATION'])
+        previous_game_location = row['GAME_LOCATION']
         wins += int(row['WON'])
         games_played += 1
         if row['CLOSE']:
@@ -159,7 +179,6 @@ def generate_season_stats(season: str):
     season_games = leaguegamelog.LeagueGameLog(counter=10, direction="ASC", league_id=nba_id,
                                                season=season, season_type_all_star='Regular Season',
                                                sorter='DATE').get_data_frames()[0]
-    season_games = season_games[season_games['TEAM_ID'] == 1610612744]
     # monstrous list comprehension because there's no builtin flatten function for python lists.
     all_game_stats_list = [team_data for game in season_games['GAME_ID'].unique()[:game_limit]
                            for team_data in pull_game_data(game)]
@@ -174,7 +193,7 @@ def generate_season_stats(season: str):
 
 if __name__ == '__main__':
     test_season = generate_season_stats('2022-23')
-    print(test_season[['GAME_DATE_EST', 'REST_DAYS', 'IS_BACK_TO_BACK']])
+    print(test_season[['GAME_DATE_EST', 'REST_DAYS', 'IS_BACK_TO_BACK', 'DISTANCE']])
     # TODO: Figure out how to get coaches on a more granular level than season, since mid season changes SHOULD be
     #  reflected if we decide to use coaches
     teams_coaches = commonteamroster.CommonTeamRoster(team_id='1610612749', season='2023').get_data_frames()
