@@ -12,7 +12,7 @@ from nba_api.stats.endpoints import boxscoreplayertrackv3
 from nba_api.live.nba.endpoints import boxscore
 from nba_api.stats.endpoints import boxscoresummaryv2
 from nba_api.stats.endpoints import leaguegamelog
-from pandas import DataFrame
+from pandas import DataFrame, read_csv
 from geopy import distance
 
 # Top level idea:
@@ -88,6 +88,7 @@ def generate_game_stats_per_team(game_box_score):
     return home_team_players_info, away_team_players_info
 
 
+# Adds the team_id of the home team to the given game_stats as the game's location.
 def add_game_location(game_stats, home_team_id):
     game_stats.at[0, 'GAME_LOCATION'] = home_team_id
     return game_stats
@@ -107,8 +108,26 @@ def add_scoring_statistics(home_team_players_info, away_team_players_info, score
     return home_team_result, away_team_result
 
 
+# Calculates the avg number of fouls called on the home team more than the away team.
+def generate_ref_statistic(ref_name, season_referee_stats):
+    # TODO: Save the index so we don't compute it twice
+    if not (season_referee_stats['Info', 'Referee'] == ref_name).any():
+        raise RuntimeError(f"Referee {ref_name} not found")
+    return season_referee_stats[season_referee_stats['Info', 'Referee'] == ref_name]\
+        ['Home Minus Visitor', 'PF'].values[0]
+
+
+# Generates the average extra personal fouls per game the referees called on the home team versus the away team.
+# A negative number means the refs called less fouls on the home team than the away team
+def generate_refs_statistics(game_officials, season_referee_stats):
+    home_pf_bias = 0
+    # TODO: Write a forloop that gets the first and last name from the rows and calls generate_ref_statistic
+    for _, row in game_officials[['FIRST_NAME', 'LAST_NAME']].iterrows():
+        home_pf_bias += generate_ref_statistic(f"{row['FIRST_NAME']} {row['LAST_NAME']}", season_referee_stats)
+    return home_pf_bias
+
 # Returns a 2 element list of the home team and away team's information.
-def pull_game_data(game_id):
+def pull_game_data(game_id, season_referee_stats):
     # 2 length list, player stats are the first element.
     players_stats = boxscoreplayertrackv3.BoxScorePlayerTrackV3(game_id=game_id).get_data_frames()
     game_box_score = players_stats[0][
@@ -121,10 +140,13 @@ def pull_game_data(game_id):
          'defendedAtRimFieldGoalPercentage']]
     summary = boxscoresummaryv2.BoxScoreSummaryV2(game_id=game_id).get_data_frames()
     home_location = summary[0]['HOME_TEAM_ID'].values[0]
-    officials = summary[2]
+    referees = summary[2]
     scores = summary[5]
     team_ids = list(set(game_box_score['teamId']))
     home_team_players_info, away_team_players_info = generate_game_stats_per_team(game_box_score)
+    ref_home_bias = generate_refs_statistics(referees, season_referee_stats)
+    home_team_players_info['REF_BIAS'] = ref_home_bias
+    away_team_players_info['REF_BIAS'] = -1 * ref_home_bias
     # TODO: Join on an already loaded First/Last name table of referee statistics
     # officials_lineup = pandas.DataFrame(officials[['FIRST_NAME', 'LAST_NAME', 'JERSEY_NUM']].values.flatten(), [''])
     home_team_result, away_team_result = add_scoring_statistics(home_team_players_info, away_team_players_info, scores)
@@ -172,16 +194,21 @@ def pull_team_data(game_data: DataFrame, team_id):
     return team_games
 
 
+def load_referees(season: str):
+    return read_csv(f'referee_data/{season}.csv', header=[0, 1])
+
+
 # Generates the regular season statistics for every game in a season.
 def generate_season_stats(season: str):
     # This is only for testing to test on a smaller dataset.
-    game_limit = 50
+    game_limit = 10
+    referees = load_referees(season)
     season_games = leaguegamelog.LeagueGameLog(counter=10, direction="ASC", league_id=nba_id,
                                                season=season, season_type_all_star='Regular Season',
                                                sorter='DATE').get_data_frames()[0]
     # monstrous list comprehension because there's no builtin flatten function for python lists.
     all_game_stats_list = [team_data for game in season_games['GAME_ID'].unique()[:game_limit]
-                           for team_data in pull_game_data(game)]
+                           for team_data in pull_game_data(game, referees)]
     all_game_stats = pandas.concat(all_game_stats_list, axis=0, ignore_index=True)
     all_game_stats_with_team_stats = \
         pandas.concat([pull_team_data(all_game_stats, team_id) for team_id in all_game_stats['teamId'].unique()],
@@ -193,7 +220,7 @@ def generate_season_stats(season: str):
 
 if __name__ == '__main__':
     test_season = generate_season_stats('2022-23')
-    print(test_season[['GAME_DATE_EST', 'REST_DAYS', 'IS_BACK_TO_BACK', 'DISTANCE']])
+    print(test_season[['GAME_DATE_EST', 'REST_DAYS', 'IS_BACK_TO_BACK', 'DISTANCE', 'REF_BIAS']])
     # TODO: Figure out how to get coaches on a more granular level than season, since mid season changes SHOULD be
     #  reflected if we decide to use coaches
     teams_coaches = commonteamroster.CommonTeamRoster(team_id='1610612749', season='2023').get_data_frames()
