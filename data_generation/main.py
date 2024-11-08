@@ -1,3 +1,5 @@
+from itertools import compress, starmap
+
 import pandas
 import datetime
 import geopy
@@ -113,7 +115,7 @@ def generate_ref_statistic(ref_name, season_referee_stats):
     # TODO: Save the index so we don't compute it twice
     if not (season_referee_stats['Info', 'Referee'] == ref_name).any():
         raise RuntimeError(f"Referee {ref_name} not found")
-    return season_referee_stats[season_referee_stats['Info', 'Referee'] == ref_name]\
+    return season_referee_stats[season_referee_stats['Info', 'Referee'] == ref_name] \
         ['Home Minus Visitor', 'PF'].values[0]
 
 
@@ -125,6 +127,7 @@ def generate_refs_statistics(game_officials, season_referee_stats):
     for _, row in game_officials[['FIRST_NAME', 'LAST_NAME']].iterrows():
         home_pf_bias += generate_ref_statistic(f"{row['FIRST_NAME']} {row['LAST_NAME']}", season_referee_stats)
     return home_pf_bias
+
 
 # Returns a 2 element list of the home team and away team's information.
 def pull_game_data(game_id, season_referee_stats):
@@ -161,26 +164,47 @@ def distance_between_teams(team_id_1, team_id_2):
     return distance.distance(location_1, location_2).miles
 
 
+# This function is based off of the following stack overflow answer: https://stackoverflow.com/a/65313188
+def starfilter(pred, values):
+    return list(compress(values, starmap(pred, values)))
+
+
+# Updates the record of the recent games played (games played in the last 7 days) given the latest game resu;t
+def update_recent_games(recent_games, latest_game_date, latest_game_result):
+    new_recent_games = starfilter(lambda date, _: (date - latest_game_date).days < 7, recent_games)
+    new_recent_games.append((latest_game_date, latest_game_result))
+    return new_recent_games
+
+
+def recent_games_win_pct(recent_games):
+    return 0 if len(recent_games) == 0 else len(starfilter(lambda _, won: won, recent_games))/len(recent_games)
+
+
 # teams ONLY have 1 coach per season, so this is a major issue to work through. Currenlty, I am assuming that there
 # is only one coach per year, and calculating a team's win percentage and close win percentage
 def pull_team_data(game_data: DataFrame, team_id):
     team_games = game_data[game_data['teamId'] == team_id]
+    # TODO: Consolidate every initialization into one statement.
     team_games.loc[:, 'WIN_PCT'] = 0
     team_games.loc[:, 'CLOSE_WIN_PCT'] = 0
     team_games.loc[:, 'IS_BACK_TO_BACK'] = False
     team_games.loc[:, 'REST_DAYS'] = 0
     team_games.loc[:, 'Distance'] = 0
+    team_games.loc[:, 'RECENT_WIN_PCT'] = 0
     wins = 0
     close_wins = 0
     games_played = 0
     close_games_played = 0
     current_game_date = None
     previous_game_location = team_id
+    recent_games = []
     for index, row in team_games.iterrows():
         team_games.loc[index, 'WIN_PCT'] = (0 if games_played == 0 else wins / games_played)
         team_games.loc[index, 'CLOSE_WIN_PCT'] = (0 if close_games_played == 0 else close_wins / close_games_played)
+        team_games.loc[index, 'RECENT_WIN_PCT'] = recent_games_win_pct(recent_games)
         previous_game_date = current_game_date
         current_game_date = pandas.to_datetime(row['GAME_DATE_EST'], format='%Y-%m-%dT%H:%M:%S')
+        recent_games = update_recent_games(recent_games, current_game_date, row['WON'])
         rest_days = (firstGameRest if previous_game_date is None else (current_game_date - previous_game_date).days - 1)
         team_games.loc[index, 'IS_BACK_TO_BACK'] = (False if previous_game_date is None else rest_days == 0)
         team_games.loc[index, 'REST_DAYS'] = rest_days
@@ -201,7 +225,7 @@ def load_referees(season: str):
 # Generates the regular season statistics for every game in a season.
 def generate_season_stats(season: str):
     # This is only for testing to test on a smaller dataset.
-    game_limit = 10
+    game_limit = 20
     referees = load_referees(season)
     season_games = leaguegamelog.LeagueGameLog(counter=10, direction="ASC", league_id=nba_id,
                                                season=season, season_type_all_star='Regular Season',
@@ -220,7 +244,7 @@ def generate_season_stats(season: str):
 
 if __name__ == '__main__':
     test_season = generate_season_stats('2022-23')
-    print(test_season[['GAME_DATE_EST', 'REST_DAYS', 'IS_BACK_TO_BACK', 'DISTANCE', 'REF_BIAS']])
+    print(test_season[['GAME_DATE_EST', 'REST_DAYS', 'IS_BACK_TO_BACK', 'DISTANCE', 'REF_BIAS', 'RECENT_WIN_PCT']])
     # TODO: Figure out how to get coaches on a more granular level than season, since mid season changes SHOULD be
     #  reflected if we decide to use coaches
     teams_coaches = commonteamroster.CommonTeamRoster(team_id='1610612749', season='2023').get_data_frames()
