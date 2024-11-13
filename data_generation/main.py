@@ -176,6 +176,7 @@ def generate_ref_statistic(ref_name, season_referee_stats):
     # TODO: Save the index so we don't compute it twice
     if not (season_referee_stats['Info', 'Referee'] == ref_name).any():
         # If the referee is not found, return 'N/A' or another placeholder value
+        print(f"Could not find a referee named {ref_name}!")
         return 'N/A'
     return season_referee_stats[season_referee_stats['Info', 'Referee'] == ref_name]\
         ['Home Minus Visitor', 'PF'].values[0]
@@ -198,7 +199,6 @@ def generate_refs_statistics(game_officials, season_referee_stats):
 # Returns a 2 element list of the home team and away team's information.
 def pull_game_data(game_id, season_referee_stats, star_player_ids):
     # 2 length list, player stats are the first element.
-    print(f"starting game {game_id} at {datetime.datetime.now()}")
     players_stats = boxscoreplayertrackv3 \
         .BoxScorePlayerTrackV3(game_id=game_id, timeout=game_timeout, headers=headers).get_data_frames()
     game_box_score = players_stats[0][
@@ -211,7 +211,6 @@ def pull_game_data(game_id, season_referee_stats, star_player_ids):
          'defendedAtRimFieldGoalPercentage']]
     summary = boxscoresummaryv2 \
         .BoxScoreSummaryV2(game_id=game_id, timeout=game_timeout, headers=headers).get_data_frames()
-    print(f"fetched game {game_id} info at {datetime.datetime.now()}")
     home_location = summary[0]['HOME_TEAM_ID'].values[0]
     referees = summary[2]
     scores = summary[5]
@@ -222,7 +221,6 @@ def pull_game_data(game_id, season_referee_stats, star_player_ids):
     home_team_result, away_team_result = add_scoring_statistics(home_team_players_info, away_team_players_info, scores)
     home_team_result = add_game_location(home_team_result, home_location)
     away_team_result = add_game_location(away_team_result, home_location)
-    print(f"finished game {game_id} at {datetime.datetime.now()}")
     return [home_team_result, away_team_result]
 
 
@@ -354,7 +352,7 @@ def generate_game_stats_for_season(season: str, game_ids, season_referee_stats, 
             try:
                 game_results = pull_game_data(game_id, season_referee_stats, star_player_ids)
                 season_games_data = pandas.concat([season_games_data] + game_results, axis=0, ignore_index=True)
-            except ReadTimeout as e:
+            except (ReadTimeout, RuntimeError) as e:
                 # Cache the accumulated data before rethrowing the exception
                 season_games_data.to_csv(cached_stats_path, index=False)
                 # Rethrow the exception to further unwind the stack
@@ -370,7 +368,6 @@ def generate_season_stats(season: str):
     referees = load_referees(season)
     season_games = leaguegamelog.LeagueGameLog(counter=10, direction="ASC", league_id=nba_id,
                                                season=season, season_type_all_star='Regular Season',
-                                               sorter='DATE').get_data_frames()[0]
                                                sorter='DATE', headers=headers).get_data_frames()[0]
     all_team_ids = season_games['TEAM_ID'].unique()
     star_player_ids = generate_star_players(all_team_ids, season)
