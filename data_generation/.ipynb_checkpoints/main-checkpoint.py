@@ -1,9 +1,6 @@
-from itertools import compress, starmap
-
 import pandas
 import datetime
 import geopy
-import os
 
 import pandas as pd
 # Press ⌃R to execute it or replace it with your code.
@@ -17,15 +14,6 @@ from nba_api.stats.endpoints import boxscoresummaryv2
 from nba_api.stats.endpoints import leaguegamelog
 from pandas import DataFrame, read_csv
 from geopy import distance
-from nba_api.stats.endpoints import leagueleaders
-
-# The code and reasoning for disabling error messages is from
-# https://stackoverflow.com/questions/68292862/performancewarning-dataframe-is-highly-fragmented-this-is-usually-the-result-o
-from warnings import simplefilter
-
-from requests import ReadTimeout
-
-simplefilter(action="ignore", category=pd.errors.PerformanceWarning)
 
 # Top level idea:
 # Step 1: Create a data frame of the per-game stats. E.g. Player stats, referees, our label points,
@@ -44,24 +32,6 @@ topNPlayerThreshold = 7
 closenessThreshold = 6
 # Controls the rest days value that we use for season starting games
 firstGameRest = 50
-# The timeout threshold for all game related calls
-game_timeout = 300
-# A custom header to keep stats.nba.api as a keep alive
-# From https://github.com/swar/nba_api/blob/master/docs/nba_api/stats/examples.md#endpoint-usage-example
-headers = {
-    'Accept': '*/*',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Connection': 'keep-alive',
-    'Origin': 'https://www.nba.com',
-    'Referer': 'https://www.nba.com/',
-    'Sec-Fetch-Dest': 'empty',
-    'Sec-Fetch-Mode': 'cors',
-    'Sec-Fetch-Site': 'same-site',
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36',
-    'sec-ch-ua': '"Google Chrome";v="107", "Chromium";v="107", "Not=A?Brand";v="24"',
-    'sec-ch-ua-mobile': '?0',
-    'sec-ch-ua-platform': '"macOS"',
-}
 
 # A dictionary of TeamIds to (lat, lon) pairs
 CITY_LOCATIONS = {1610612737: (33.7501, -84.3885), 1610612738: (42.3601, -71.0589), 1610612739: (41.4993, -81.6944),
@@ -91,16 +61,6 @@ def query_top_players_on_team(player_game_data: DataFrame, team_id):
     return player_game_data.query('teamId == @team_id') \
         .sort_values('minutes', ascending=False, key=(lambda minutes: minutes.map(minutes_to_seconds))) \
         .head(topNPlayerThreshold)
-
-
-def generate_player_stats(player_data):
-    player_data.insert(0, 'seconds', player_data['minutes'].apply(minutes_to_seconds))
-    return player_data.drop(['minutes', 'teamId', 'personId'], axis=1)
-
-
-# Determines if the given player played in the game.
-def is_player_present(game_box_score, player_id):
-    return (game_box_score['personId'] == player_id).any()
 
 
 # Given a game box score, generates a vector for both teams of the top N players (and their stats) on this team and
@@ -154,8 +114,8 @@ def add_game_location(game_stats, home_team_id):
     return game_stats
 
 
-# Adds the GAME_ID, scoring, W/L, and closeness information to each team's output vector from
-# generate_game_stats_per_team. Both vectors must be passed in in-order to determine which team won/lost.
+# Adds the scoring, W/L, and closeness information to each team's output vector from generate_game_stats_per_team.
+# Both vectors must be passed in in order to determine which team won/lost.
 def add_scoring_statistics(home_team_players_info, away_team_players_info, scores):
     non_player_info = scores[['GAME_ID', 'TEAM_ID', 'PTS', 'TEAM_WINS_LOSSES', 'GAME_DATE_EST']]
     home_team_result = pd.merge(home_team_players_info, non_player_info, left_on='teamId', right_on='TEAM_ID').copy()
@@ -196,33 +156,31 @@ def generate_refs_statistics(game_officials, season_referee_stats):
 
 
 # Returns a 2 element list of the home team and away team's information.
-def pull_game_data(game_id, season_referee_stats, star_player_ids):
+def pull_game_data(game_id, season_referee_stats):
     # 2 length list, player stats are the first element.
-    print(f"starting game {game_id} at {datetime.datetime.now()}")
-    players_stats = boxscoreplayertrackv3 \
-        .BoxScorePlayerTrackV3(game_id=game_id, timeout=game_timeout, headers=headers).get_data_frames()
+    players_stats = boxscoreplayertrackv3.BoxScorePlayerTrackV3(game_id=game_id).get_data_frames()
     game_box_score = players_stats[0][
-        ['teamId', 'personId', 'minutes', 'speed', 'distance', 'reboundChancesOffensive',
+        ['teamId', 'teamCity', 'personId', 'minutes', 'speed', 'distance', 'reboundChancesOffensive',
          'reboundChancesTotal', 'touches', 'secondaryAssists', 'freeThrowAssists', 'passes',
          'assists', 'contestedFieldGoalsMade', 'contestedFieldGoalsAttempted',
          'contestedFieldGoalPercentage', 'uncontestedFieldGoalsMade',
          'uncontestedFieldGoalsAttempted', 'uncontestedFieldGoalsPercentage', 'fieldGoalPercentage',
          'defendedAtRimFieldGoalsMade', 'defendedAtRimFieldGoalsAttempted',
          'defendedAtRimFieldGoalPercentage']]
-    summary = boxscoresummaryv2 \
-        .BoxScoreSummaryV2(game_id=game_id, timeout=game_timeout, headers=headers).get_data_frames()
-    print(f"fetched game {game_id} info at {datetime.datetime.now()}")
+    summary = boxscoresummaryv2.BoxScoreSummaryV2(game_id=game_id).get_data_frames()
     home_location = summary[0]['HOME_TEAM_ID'].values[0]
     referees = summary[2]
     scores = summary[5]
-    home_team_players_info, away_team_players_info = generate_game_stats_per_team(game_box_score, star_player_ids)
+    team_ids = list(set(game_box_score['teamId']))
+    home_team_players_info, away_team_players_info = generate_game_stats_per_team(game_box_score)
     ref_home_bias = generate_refs_statistics(referees, season_referee_stats)
     home_team_players_info['REF_BIAS'] = ref_home_bias
     away_team_players_info['REF_BIAS'] = -1 * ref_home_bias
+    # TODO: Join on an already loaded First/Last name table of referee statistics
+    # officials_lineup = pandas.DataFrame(officials[['FIRST_NAME', 'LAST_NAME', 'JERSEY_NUM']].values.flatten(), [''])
     home_team_result, away_team_result = add_scoring_statistics(home_team_players_info, away_team_players_info, scores)
     home_team_result = add_game_location(home_team_result, home_location)
     away_team_result = add_game_location(away_team_result, home_location)
-    print(f"finished game {game_id} at {datetime.datetime.now()}")
     return [home_team_result, away_team_result]
 
 
@@ -232,23 +190,7 @@ def distance_between_teams(team_id_1, team_id_2):
     return distance.distance(location_1, location_2).miles
 
 
-# This function is based off of the following stack overflow answer: https://stackoverflow.com/a/65313188
-def starfilter(pred, values):
-    return list(compress(values, starmap(pred, values)))
-
-
-# Updates the record of the recent games played (games played in the last 7 days) given the latest game resu;t
-def update_recent_games(recent_games, latest_game_date, latest_game_result):
-    new_recent_games = starfilter(lambda date, _: (date - latest_game_date).days < 7, recent_games)
-    new_recent_games.append((latest_game_date, latest_game_result))
-    return new_recent_games
-
-
-def recent_games_win_pct(recent_games):
-    return 0 if len(recent_games) == 0 else len(starfilter(lambda _, won: won, recent_games)) / len(recent_games)
-
-
-# teams ONLY have 1 coach per season, so this is a major issue to work through. Currenlty, I am assuming that there
+# teams ONLY have 1 coach per season, so this is a major issue to work through. Currently, I am assuming that there
 # is only one coach per year, and calculating a team's win percentage and close win percentage
 def pull_team_data(game_data: DataFrame, team_id):
     team_games = game_data[game_data['teamId'] == team_id].copy()
@@ -319,50 +261,6 @@ def load_referees(season: str):
     return read_csv(f'referee_data/{season}.csv', header=[0, 1])
 
 
-# Updates each game to add the opponent recent win percentage, and TODO: whether the star player was present
-def update_game_stats(game_id, all_game_stats):
-    game_stats = all_game_stats[all_game_stats['GAME_ID'] == game_id]
-    # .values needed here to remove the index information from the resulting series
-    game_stats.insert(len(game_stats.columns), 'OPPONENT_WIN_PCT', game_stats['RECENT_WIN_PCT'][::-1].values,
-                      allow_duplicates=False)
-    # Project away all extra information needed for calculating features
-    return game_stats.drop(['GAME_ID', 'GAME_DATE_EST'], axis=1)
-
-
-# Given a list of team_ids generates a corresponding map of teams to star players.
-def generate_star_players(team_ids: list, season: str):
-    star_players = dict()
-    best_players = leagueleaders.LeagueLeaders(league_id='00', per_mode48='PerGame', scope='S', season=season,
-                                               season_type_all_star='Regular Season',
-                                               headers=headers).get_data_frames()[0] \
-        .sort_values('EFF', ascending=False)
-    for team_id in team_ids:
-        star_players[team_id] = best_players[best_players['TEAM_ID'] == team_id].head(1)['PLAYER_ID'].values[0]
-    return star_players
-
-
-# Generates the game stats for the given season. If we are getting rate limited, writes the output to disk
-# before crashing. If the game stats for a season already exist, loads them up and continues going.
-def generate_game_stats_for_season(season: str, game_ids, season_referee_stats, star_player_ids):
-    cached_stats_path = f"game_stats/{season}.csv"
-    season_games_data = DataFrame()
-    remaining_ids = game_ids
-    if os.path.exists(cached_stats_path):
-        season_games_data = read_csv(cached_stats_path)
-        remaining_ids = set(game_ids) - set(season_games_data['GAME_ID'].values)
-    for game_id in remaining_ids:
-            try:
-                game_results = pull_game_data(game_id, season_referee_stats, star_player_ids)
-                season_games_data = pandas.concat([season_games_data] + game_results, axis=0, ignore_index=True)
-            except ReadTimeout as e:
-                # Cache the accumulated data before rethrowing the exception
-                season_games_data.to_csv(cached_stats_path, index=False)
-                # Rethrow the exception to further unwind the stack
-                raise e
-    # successfully have gotten the stats for every game
-    return season_games_data
-
-
 # Generates the regular season statistics for every game in a season.
 def generate_season_stats(season: str):
     # This is only for testing to test on a smaller dataset.
@@ -371,34 +269,23 @@ def generate_season_stats(season: str):
     season_games = leaguegamelog.LeagueGameLog(counter=10, direction="ASC", league_id=nba_id,
                                                season=season, season_type_all_star='Regular Season',
                                                sorter='DATE').get_data_frames()[0]
-                                               sorter='DATE', headers=headers).get_data_frames()[0]
-    all_team_ids = season_games['TEAM_ID'].unique()
-    star_player_ids = generate_star_players(all_team_ids, season)
-    all_game_ids = season_games['GAME_ID'].unique()
     # monstrous list comprehension because there's no builtin flatten function for python lists.
-    all_game_stats = generate_game_stats_for_season(season, all_game_ids, referees, star_player_ids)
-    all_game_stats_with_team_stats = \
-        pandas.concat([pull_team_data(all_game_stats, team_id) for team_id in all_team_ids],
-                      axis=0,
-                      ignore_index=True)
-    complete_season_stats_list = [update_game_stats(game_id, all_game_stats_with_team_stats)
-                                  for game_id in all_game_ids]
-    complete_season_stats = pandas.concat(complete_season_stats_list, axis=0, ignore_index=True)
+    # list of game DFs
+    all_game_stats_list = [team_data for game in season_games['GAME_ID'].unique()[:game_limit]
+                           for team_data in pull_game_data(game, referees)]
+    all_game_stats = pd.concat(all_game_stats_list, axis=0, ignore_index=True)
+
+    # Build list of team data and concat
+    all_teams_data = [pull_team_data(all_game_stats, team_id) for team_id in all_game_stats['teamId'].unique()]
+    all_game_stats_with_team_stats = pd.concat(all_teams_data, axis=0, ignore_index=True)
+    
     # TODO: Remove all of the columns that are not longer needed anymore (e.g Date, teamIds, playerIds, etc).
-    return complete_season_stats
-
-
-# Generates the given season and writes the data to the corresponding csv in output_data
-def write_season_stats(season):
-    season_stats = generate_season_stats(season)
-    # Solution from https://stackoverflow.com/questions/17383094/how-can-i-map-true-false-to-1-0-in-a-pandas-dataframe
-    season_stats.loc[:, ['CLOSE', 'WON', 'IS_BACK_TO_BACK', 'STAR_PLAYER_PRESENT']] = \
-        season_stats[['CLOSE', 'WON', 'IS_BACK_TO_BACK', 'STAR_PLAYER_PRESENT']].astype(int)
-    season_stats.to_csv(f"output_data/{season}_data.csv", index=False)
+    return all_game_stats_with_team_stats
 
 
 if __name__ == '__main__':
-    write_season_stats('2022-23')
+    test_season = generate_season_stats('2022-23')
+    print(test_season[['GAME_DATE_EST', 'REST_DAYS', 'IS_BACK_TO_BACK', 'DISTANCE', 'REF_BIAS']])
     # TODO: Figure out how to get coaches on a more granular level than season, since mid season changes SHOULD be
     #  reflected if we decide to use coaches
     teams_coaches = commonteamroster.CommonTeamRoster(team_id='1610612749', season='2023').get_data_frames()
