@@ -66,26 +66,46 @@ def query_top_players_on_team(player_game_data: DataFrame, team_id):
 # Given a game box score, generates a vector for both teams of the top N players (and their stats) on this team and
 # the opposing team
 def generate_game_stats_per_team(game_box_score):
-    team_ids = list(set(game_box_score['teamId']))
-    home_team_top_players = query_top_players_on_team(game_box_score, team_ids[0])
-    away_team_top_players = query_top_players_on_team(game_box_score, team_ids[1])
-    home_team_players_info = DataFrame({'teamId': [team_ids[0]]})
-    away_team_players_info = DataFrame({'teamId': [team_ids[1]]})
+    # Filter players to get top players for home and away teams based on teamId
+    home_team_top_players = query_top_players_on_team(game_box_score, game_box_score.iloc[0]['teamId'])
+    away_team_top_players = query_top_players_on_team(game_box_score, game_box_score.iloc[-1]['teamId'])
+
+    # Get team IDs directly from these DataFrames
+    home_team_id = home_team_top_players.iloc[0]['teamId']
+    away_team_id = away_team_top_players.iloc[0]['teamId']
+
+    # Collect player data for each team without adding teamId in individual dictionaries
+    home_team_data = []
+    away_team_data = []
+
     rank = 1
-    for (_, home_team_player) in home_team_top_players.iterrows():
-        home_team_column_names = home_team_player.index.map(lambda col_name: col_name + '_my_player_' + str(rank))
-        home_team_players_info[home_team_column_names] = home_team_player.values
-        away_team_column_names = home_team_player.index.map(lambda col_name: col_name + '_opposing_player_' + str(rank))
-        away_team_players_info[away_team_column_names] = home_team_player.values
+    for _, home_team_player in home_team_top_players.iterrows():
+        player_data = {col + f'_my_player_{rank}': [val] for col, val in zip(home_team_player.index, home_team_player.values) if col != 'teamId'}
+        home_team_data.append(player_data)
+        
+        opponent_data = {col + f'_opposing_player_{rank}': [val] for col, val in zip(home_team_player.index, home_team_player.values) if col != 'teamId'}
+        away_team_data.append(opponent_data)
         rank += 1
+
     rank = 1
-    for (_, away_team_player) in away_team_top_players.iterrows():
-        home_team_column_names = away_team_player.index.map(lambda col_name: col_name + '_opposing_player_' + str(rank))
-        home_team_players_info[home_team_column_names] = away_team_player.values
-        away_team_column_names = away_team_player.index.map(lambda col_name: col_name + '_my_player_' + str(rank))
-        away_team_players_info[away_team_column_names] = away_team_player.values
+    for _, away_team_player in away_team_top_players.iterrows():
+        opponent_data = {col + f'_opposing_player_{rank}': [val] for col, val in zip(away_team_player.index, away_team_player.values) if col != 'teamId'}
+        home_team_data.append(opponent_data)
+        
+        player_data = {col + f'_my_player_{rank}': [val] for col, val in zip(away_team_player.index, away_team_player.values) if col != 'teamId'}
+        away_team_data.append(player_data)
         rank += 1
+
+    # Convert collected data to DataFrames
+    home_team_players_info = pd.concat([pd.DataFrame(data) for data in home_team_data], axis=1)
+    away_team_players_info = pd.concat([pd.DataFrame(data) for data in away_team_data], axis=1)
+
+    # Add `teamId` column at the end of each DataFrame
+    home_team_players_info['teamId'] = home_team_id
+    away_team_players_info['teamId'] = away_team_id
+
     return home_team_players_info, away_team_players_info
+
 
 
 # Adds the team_id of the home team to the given game_stats as the game's location.
@@ -98,13 +118,16 @@ def add_game_location(game_stats, home_team_id):
 # Both vectors must be passed in in order to determine which team won/lost.
 def add_scoring_statistics(home_team_players_info, away_team_players_info, scores):
     non_player_info = scores[['GAME_ID', 'TEAM_ID', 'PTS', 'TEAM_WINS_LOSSES', 'GAME_DATE_EST']]
-    home_team_result = DataFrame.merge(home_team_players_info, non_player_info, left_on='teamId', right_on='TEAM_ID')
-    away_team_result = DataFrame.merge(away_team_players_info, non_player_info, left_on='teamId', right_on='TEAM_ID')
+    home_team_result = pd.merge(home_team_players_info, non_player_info, left_on='teamId', right_on='TEAM_ID').copy()
+    away_team_result = pd.merge(away_team_players_info, non_player_info, left_on='teamId', right_on='TEAM_ID').copy()
+
+    # calculate close game and determine winner
     was_game_close = abs(home_team_result['PTS'] - away_team_result['PTS']) <= closenessThreshold
     home_team_result['CLOSE'] = was_game_close
     away_team_result['CLOSE'] = was_game_close
     home_team_result['WON'] = home_team_result['PTS'] > away_team_result['PTS']
     away_team_result['WON'] = away_team_result['PTS'] > home_team_result['PTS']
+    
     return home_team_result, away_team_result
 
 
@@ -112,7 +135,8 @@ def add_scoring_statistics(home_team_players_info, away_team_players_info, score
 def generate_ref_statistic(ref_name, season_referee_stats):
     # TODO: Save the index so we don't compute it twice
     if not (season_referee_stats['Info', 'Referee'] == ref_name).any():
-        raise RuntimeError(f"Referee {ref_name} not found")
+        # If the referee is not found, return 'N/A' or another placeholder value
+        return 'N/A'
     return season_referee_stats[season_referee_stats['Info', 'Referee'] == ref_name]\
         ['Home Minus Visitor', 'PF'].values[0]
 
@@ -121,10 +145,15 @@ def generate_ref_statistic(ref_name, season_referee_stats):
 # A negative number means the refs called less fouls on the home team than the away team
 def generate_refs_statistics(game_officials, season_referee_stats):
     home_pf_bias = 0
-    # TODO: Write a forloop that gets the first and last name from the rows and calls generate_ref_statistic
+    # Loop through each referee, fetching the bias or using a default if not available
     for _, row in game_officials[['FIRST_NAME', 'LAST_NAME']].iterrows():
-        home_pf_bias += generate_ref_statistic(f"{row['FIRST_NAME']} {row['LAST_NAME']}", season_referee_stats)
+        ref_name = f"{row['FIRST_NAME']} {row['LAST_NAME']}"
+        ref_bias = generate_ref_statistic(ref_name, season_referee_stats)
+        # Only add to the bias if it's a numeric value
+        if ref_bias != 'N/A':
+            home_pf_bias += ref_bias
     return home_pf_bias
+
 
 # Returns a 2 element list of the home team and away team's information.
 def pull_game_data(game_id, season_referee_stats):
@@ -161,37 +190,71 @@ def distance_between_teams(team_id_1, team_id_2):
     return distance.distance(location_1, location_2).miles
 
 
-# teams ONLY have 1 coach per season, so this is a major issue to work through. Currenlty, I am assuming that there
+# teams ONLY have 1 coach per season, so this is a major issue to work through. Currently, I am assuming that there
 # is only one coach per year, and calculating a team's win percentage and close win percentage
 def pull_team_data(game_data: DataFrame, team_id):
-    team_games = game_data[game_data['teamId'] == team_id]
-    team_games.loc[:, 'WIN_PCT'] = 0
-    team_games.loc[:, 'CLOSE_WIN_PCT'] = 0
-    team_games.loc[:, 'IS_BACK_TO_BACK'] = False
-    team_games.loc[:, 'REST_DAYS'] = 0
-    team_games.loc[:, 'Distance'] = 0
+    team_games = game_data[game_data['teamId'] == team_id].copy()
+
+    # Initialize lists to store column data 
+    win_pct_list = []
+    close_win_pct_list = []
+    is_back_to_back_list = []
+    rest_days_list = []
+    distance_list = []
+
+    # Counters/placeholders initialization
     wins = 0
     close_wins = 0
     games_played = 0
     close_games_played = 0
-    current_game_date = None
+    previous_game_date = None  # Start with None to handle the first game separately
     previous_game_location = team_id
+
     for index, row in team_games.iterrows():
-        team_games.loc[index, 'WIN_PCT'] = (0 if games_played == 0 else wins / games_played)
-        team_games.loc[index, 'CLOSE_WIN_PCT'] = (0 if close_games_played == 0 else close_wins / close_games_played)
-        previous_game_date = current_game_date
-        current_game_date = pandas.to_datetime(row['GAME_DATE_EST'], format='%Y-%m-%dT%H:%M:%S')
-        rest_days = (firstGameRest if previous_game_date is None else (current_game_date - previous_game_date).days - 1)
-        team_games.loc[index, 'IS_BACK_TO_BACK'] = (False if previous_game_date is None else rest_days == 0)
-        team_games.loc[index, 'REST_DAYS'] = rest_days
-        team_games.loc[index, 'DISTANCE'] = distance_between_teams(previous_game_location, row['GAME_LOCATION'])
+        # Calculate win percentages
+        win_pct = 0 if games_played == 0 else wins / games_played
+        close_win_pct = 0 if close_games_played == 0 else close_wins / close_games_played
+        win_pct_list.append(win_pct)
+        close_win_pct_list.append(close_win_pct)
+
+        # Calculate rest days and back-to-back status
+        current_game_date = pd.to_datetime(row['GAME_DATE_EST'], format='%Y-%m-%dT%H:%M:%S')
+        
+        if previous_game_date is None:
+            # First game of the season
+            rest_days = firstGameRest
+        else:
+            # Calculate the rest days as the difference from the previous game date
+            rest_days = (current_game_date - previous_game_date).days - 1
+        
+        is_back_to_back = rest_days == 0
+        is_back_to_back_list.append(is_back_to_back)
+        rest_days_list.append(rest_days)
+
+        # Calculate travel distance
+        distance = distance_between_teams(previous_game_location, row['GAME_LOCATION'])
+        distance_list.append(distance)
         previous_game_location = row['GAME_LOCATION']
+
+        # Update previous_game_date to current date for the next iteration
+        previous_game_date = current_game_date
+
+        # Update win and close win counts
         wins += int(row['WON'])
         games_played += 1
         if row['CLOSE']:
             close_wins += int(row['WON'])
             close_games_played += 1
+
+    # Add calculated lists to the DataFrame
+    team_games['WIN_PCT'] = win_pct_list
+    team_games['CLOSE_WIN_PCT'] = close_win_pct_list
+    team_games['IS_BACK_TO_BACK'] = is_back_to_back_list
+    team_games['REST_DAYS'] = rest_days_list
+    team_games['DISTANCE'] = distance_list
+
     return team_games
+
 
 
 def load_referees(season: str):
@@ -207,13 +270,15 @@ def generate_season_stats(season: str):
                                                season=season, season_type_all_star='Regular Season',
                                                sorter='DATE').get_data_frames()[0]
     # monstrous list comprehension because there's no builtin flatten function for python lists.
+    # list of game DFs
     all_game_stats_list = [team_data for game in season_games['GAME_ID'].unique()[:game_limit]
                            for team_data in pull_game_data(game, referees)]
-    all_game_stats = pandas.concat(all_game_stats_list, axis=0, ignore_index=True)
-    all_game_stats_with_team_stats = \
-        pandas.concat([pull_team_data(all_game_stats, team_id) for team_id in all_game_stats['teamId'].unique()],
-                      axis=0,
-                      ignore_index=True)
+    all_game_stats = pd.concat(all_game_stats_list, axis=0, ignore_index=True)
+
+    # Build list of team data and concat
+    all_teams_data = [pull_team_data(all_game_stats, team_id) for team_id in all_game_stats['teamId'].unique()]
+    all_game_stats_with_team_stats = pd.concat(all_teams_data, axis=0, ignore_index=True)
+    
     # TODO: Remove all of the columns that are not longer needed anymore (e.g Date, teamIds, playerIds, etc).
     return all_game_stats_with_team_stats
 
