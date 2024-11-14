@@ -4,6 +4,7 @@ import pandas
 import datetime
 import geopy
 import os
+import csv
 
 import pandas as pd
 # Press ⌃R to execute it or replace it with your code.
@@ -27,16 +28,6 @@ from requests import ReadTimeout
 
 simplefilter(action="ignore", category=pd.errors.PerformanceWarning)
 
-# Top level idea:
-# Step 1: Create a data frame of the per-game stats. E.g. Player stats, referees, our label points,
-# etc. pull_game_data is responsible for doing this (referee stuff is not implemented yet since that should be
-# straightforward but annoying). The topNPlayersAvg and other features would go in here. The current 433 features
-# that are present are just a placeholder until we figure out which ones we want. Defense would also go here as well.
-# Step 2: On the dataset containing all the individual game data gathered in step 1, create the aggregated features,
-# e.g. IsBackToBack, RestDays, OppWinPct, and Dist. Features that require looking at a sequence of games.
-# We currently have an issue that coaches are recorded on a per season NOT per game basis, meaning in season coaching
-# changes will be hard if not impossible to measure.
-
 nba_id = '00'
 # Controls how many players PER TEAM are in each datapoint.
 topNPlayerThreshold = 7
@@ -45,7 +36,7 @@ closenessThreshold = 6
 # Controls the rest days value that we use for season starting games
 firstGameRest = 50
 # The timeout threshold for all game related calls
-game_timeout = 300
+game_timeout = 30
 # A custom header to keep stats.nba.api as a keep alive
 # From https://github.com/swar/nba_api/blob/master/docs/nba_api/stats/examples.md#endpoint-usage-example
 headers = {
@@ -105,7 +96,7 @@ def is_player_present(game_box_score, player_id):
 
 # Given a game box score, generates a vector for both teams of the top N players (and their stats) on this team and
 # the opposing team
-def generate_game_stats_per_team(game_box_score):
+def generate_game_stats_per_team(game_box_score, star_players_id):
     # Filter players to get top players for home and away teams based on teamId
     home_team_top_players = query_top_players_on_team(game_box_score, game_box_score.iloc[0]['teamId'])
     away_team_top_players = query_top_players_on_team(game_box_score, game_box_score.iloc[-1]['teamId'])
@@ -115,8 +106,8 @@ def generate_game_stats_per_team(game_box_score):
     away_team_id = away_team_top_players.iloc[0]['teamId']
 
     # Collect player data for each team without adding teamId in individual dictionaries
-    home_team_data = []
-    away_team_data = []
+    home_team_data = [{'STAR_PLAYER_PRESENT': [is_player_present(game_box_score, star_players_id[home_team_id])]}]
+    away_team_data = [{'STAR_PLAYER_PRESENT': [is_player_present(game_box_score, star_players_id[away_team_id])]}]
 
     rank = 1
     for _, home_team_player in home_team_top_players.iterrows():
@@ -175,8 +166,9 @@ def add_scoring_statistics(home_team_players_info, away_team_players_info, score
 def generate_ref_statistic(ref_name, season_referee_stats):
     # TODO: Save the index so we don't compute it twice
     if not (season_referee_stats['Info', 'Referee'] == ref_name).any():
+        #
+        raise RuntimeError(f"Could not find a referee named {ref_name}!")
         # If the referee is not found, return 'N/A' or another placeholder value
-        print(f"Could not find a referee named {ref_name}!")
         return 'N/A'
     return season_referee_stats[season_referee_stats['Info', 'Referee'] == ref_name]\
         ['Home Minus Visitor', 'PF'].values[0]
@@ -257,6 +249,7 @@ def pull_team_data(game_data: DataFrame, team_id):
     is_back_to_back_list = []
     rest_days_list = []
     distance_list = []
+    recent_win_pct_list = []
 
     # Counters/placeholders initialization
     wins = 0
@@ -265,6 +258,8 @@ def pull_team_data(game_data: DataFrame, team_id):
     close_games_played = 0
     previous_game_date = None  # Start with None to handle the first game separately
     previous_game_location = team_id
+    # Sliding window of (date, result) tuples representing the team's recent games.
+    recent_games = []
 
     for index, row in team_games.iterrows():
         # Calculate win percentages
@@ -292,6 +287,11 @@ def pull_team_data(game_data: DataFrame, team_id):
         distance_list.append(distance)
         previous_game_location = row['GAME_LOCATION']
 
+        # Calculate recent win pct
+        recent_win_pct = recent_games_win_pct(recent_games)
+        recent_win_pct_list.append(recent_win_pct)
+        recent_games = update_recent_games(recent_games, current_game_date, row['WON'])
+
         # Update previous_game_date to current date for the next iteration
         previous_game_date = current_game_date
 
@@ -308,11 +308,12 @@ def pull_team_data(game_data: DataFrame, team_id):
     team_games['IS_BACK_TO_BACK'] = is_back_to_back_list
     team_games['REST_DAYS'] = rest_days_list
     team_games['DISTANCE'] = distance_list
+    team_games['RECENT_WIN_PCT'] = recent_win_pct_list
 
     return team_games
 
 
-
+# Loads and returns the stats for the referees from the given season.
 def load_referees(season: str):
     return read_csv(f'referee_data/{season}.csv', header=[0, 1])
 
@@ -346,18 +347,20 @@ def generate_game_stats_for_season(season: str, game_ids, season_referee_stats, 
     season_games_data = DataFrame()
     remaining_ids = game_ids
     if os.path.exists(cached_stats_path):
-        season_games_data = read_csv(cached_stats_path)
+        season_games_data = read_csv(cached_stats_path, dtype={'GAME_ID': str})
         remaining_ids = set(game_ids) - set(season_games_data['GAME_ID'].values)
     for game_id in remaining_ids:
             try:
                 game_results = pull_game_data(game_id, season_referee_stats, star_player_ids)
                 season_games_data = pandas.concat([season_games_data] + game_results, axis=0, ignore_index=True)
-            except (ReadTimeout, RuntimeError) as e:
+            # If an error occurs, save where we're at to resume later.
+            except Exception as e:
                 # Cache the accumulated data before rethrowing the exception
-                season_games_data.to_csv(cached_stats_path, index=False)
+                season_games_data.to_csv(cached_stats_path, index=False, quoting=csv.QUOTE_NONNUMERIC)
                 # Rethrow the exception to further unwind the stack
                 raise e
-    # successfully have gotten the stats for every game
+    # successfully have gotten the stats for every game. Cache it in case later processing steps fail.
+    season_games_data.to_csv(cached_stats_path, index=False)
     return season_games_data
 
 
@@ -385,7 +388,8 @@ def generate_season_stats(season: str):
     return complete_season_stats
 
 
-# Generates the given season and writes the data to the corresponding csv in output_data
+# Generates the given season and writes the data to the corresponding csv in output_data.
+# In case an error occurs, the data for all the games that have been processed is written to game_stats.
 def write_season_stats(season):
     season_stats = generate_season_stats(season)
     # Solution from https://stackoverflow.com/questions/17383094/how-can-i-map-true-false-to-1-0-in-a-pandas-dataframe
@@ -394,8 +398,13 @@ def write_season_stats(season):
     season_stats.to_csv(f"output_data/{season}_data.csv", index=False)
 
 
+# Instructions to run:
+# Replace the season in write_season_stats and the program will generate the stats per game in the output_data.
+# There most likely will be a timeout error while running the program. The program will cache the season data
+# to the appropriate file in game_stats before exiting. Wait approximately a minute or so to avoid getting
+# blocked on nba_api and re-run the program. It will load the cached data and resume from there. 
 if __name__ == '__main__':
-    write_season_stats('2022-23')
+    write_season_stats('2023-24')
     # TODO: Figure out how to get coaches on a more granular level than season, since mid season changes SHOULD be
     #  reflected if we decide to use coaches
     teams_coaches = commonteamroster.CommonTeamRoster(team_id='1610612749', season='2023').get_data_frames()
