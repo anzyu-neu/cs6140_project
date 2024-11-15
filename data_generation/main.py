@@ -84,6 +84,7 @@ def query_top_players_on_team(player_game_data: DataFrame, team_id):
         .head(topNPlayerThreshold)
 
 
+# Transforms the minutes column into seconds to change it into a column.
 def generate_player_stats(player_data):
     player_data.insert(0, 'seconds', player_data['minutes'].apply(minutes_to_seconds))
     return player_data.drop(['minutes', 'teamId', 'personId'], axis=1)
@@ -104,6 +105,10 @@ def generate_game_stats_per_team(game_box_score, star_players_id):
     # Get team IDs directly from these DataFrames
     home_team_id = home_team_top_players.iloc[0]['teamId']
     away_team_id = away_team_top_players.iloc[0]['teamId']
+
+    # Remove extra information form the players (like teamId and personId)
+    home_team_top_players = generate_player_stats(home_team_top_players)
+    away_team_top_players = generate_player_stats(away_team_top_players)
 
     # Collect player data for each team without adding teamId in individual dictionaries
     home_team_data = [{'STAR_PLAYER_PRESENT': [is_player_present(game_box_score, star_players_id[home_team_id])]}]
@@ -384,8 +389,8 @@ def generate_season_stats(season: str):
     complete_season_stats_list = [update_game_stats(game_id, all_game_stats_with_team_stats)
                                   for game_id in all_game_ids]
     complete_season_stats = pandas.concat(complete_season_stats_list, axis=0, ignore_index=True)
-    # TODO: Remove all of the columns that are not longer needed anymore (e.g Date, teamIds, playerIds, etc).
-    return complete_season_stats
+    # Drops the last non linear features (teamId and TEAM_WIN_LOSSES).
+    return complete_season_stats.drop(['teamId', 'TEAM_WINS_LOSSES'], axis=1)
 
 
 # Generates the given season and writes the data to the corresponding csv in output_data.
@@ -402,9 +407,9 @@ def write_season_stats(season):
 # Replace the season in write_season_stats and the program will generate the stats per game in the output_data.
 # There most likely will be a timeout error while running the program. The program will cache the season data
 # to the appropriate file in game_stats before exiting. Wait approximately a minute or so to avoid getting
-# blocked on nba_api and re-run the program. It will load the cached data and resume from there. 
+# blocked on nba_api and re-run the program. It will load the cached data and resume from there.
 if __name__ == '__main__':
-    write_season_stats('2023-24')
+    write_season_stats('2021-22')
     # TODO: Figure out how to get coaches on a more granular level than season, since mid season changes SHOULD be
     #  reflected if we decide to use coaches
     teams_coaches = commonteamroster.CommonTeamRoster(team_id='1610612749', season='2023').get_data_frames()
