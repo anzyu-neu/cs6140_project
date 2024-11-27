@@ -389,7 +389,7 @@ def generate_season_stats(season: str):
                                   for game_id in all_game_ids]
     complete_season_stats = pandas.concat(complete_season_stats_list, axis=0, ignore_index=True)
     # Drops the last non linear features (teamId and TEAM_WIN_LOSSES).
-    return complete_season_stats.drop(['teamId', 'TEAM_WINS_LOSSES', 'GAME_LOCATION', 'TEAM_ID'], axis=1)
+    return complete_season_stats.drop(['TEAM_WINS_LOSSES', 'GAME_LOCATION', 'TEAM_ID'], axis=1)
 
 
 # Generates the given season and writes the data to the corresponding csv in output_data.
@@ -408,7 +408,7 @@ def write_season_stats(season):
 # to the appropriate file in game_stats before exiting. Wait approximately a minute or so to avoid getting
 # blocked on nba_api and re-run the program. It will load the cached data and resume from there.
 if __name__ == '__main__':
-    write_season_stats('2022-23')
+    write_season_stats('2023-24')
     # TODO: Figure out how to get coaches on a more granular level than season, since mid season changes SHOULD be
     #  reflected if we decide to use coaches
     teams_coaches = commonteamroster.CommonTeamRoster(team_id='1610612749', season='2023').get_data_frames()
