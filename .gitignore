@@ -3,3 +3,7 @@ venv/
 __pycache__/
 *.ipynb
 data_generation/__pycache__/main.cpython-312.pyc
+/data_generation/.ipynb_checkpoints
+/data_generation/__pycache__
+/data_generation/output_data/.ipynb_checkpoints
+/sample_nns/.ipynb_checkpoints
