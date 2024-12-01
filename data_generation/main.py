@@ -168,28 +168,39 @@ def add_scoring_statistics(home_team_players_info, away_team_players_info, score
 
 # Calculates the avg number of fouls called on the home team more than the away team.
 def generate_ref_statistic(ref_name, season_referee_stats):
-    # TODO: Save the index so we don't compute it twice
+    # Check if the referee exists in the data
     if not (season_referee_stats['Info', 'Referee'] == ref_name).any():
-        #
-        raise RuntimeError(f"Could not find a referee named {ref_name}!")
-        # If the referee is not found, return 'N/A' or another placeholder value
-        return 'N/A'
-    return season_referee_stats[season_referee_stats['Info', 'Referee'] == ref_name]\
+        print(f"Warning: Referee data not found for {ref_name}. Defaulting to 0.")
+        return 0  # Default to 0 if referee is not found
+
+    # Fetch the bias value
+    ref_bias = season_referee_stats[season_referee_stats['Info', 'Referee'] == ref_name] \
         ['Home Minus Visitor', 'PF'].values[0]
 
+    # Ensure the fetched value is numeric
+    if isinstance(ref_bias, (int, float)):
+        return ref_bias
+    else:
+        print(f"Warning: Non-numeric bias value for referee {ref_name}. Defaulting to 0.")
+        return 0
 
 # Generates the average extra personal fouls per game the referees called on the home team versus the away team.
-# A negative number means the refs called less fouls on the home team than the away team
+# A negative number means the refs called fewer fouls on the home team than the away team.
 def generate_refs_statistics(game_officials, season_referee_stats):
     home_pf_bias = 0
-    # Loop through each referee, fetching the bias or using a default if not available
+    # Loop through each referee and fetch the bias value
     for _, row in game_officials[['FIRST_NAME', 'LAST_NAME']].iterrows():
         ref_name = f"{row['FIRST_NAME']} {row['LAST_NAME']}"
         ref_bias = generate_ref_statistic(ref_name, season_referee_stats)
-        # Only add to the bias if it's a numeric value
-        if ref_bias != 'N/A':
+
+        # Add only numeric biases
+        if isinstance(ref_bias, (int, float)):
             home_pf_bias += ref_bias
+        else:
+            print(f"Skipping invalid bias for referee {ref_name}: {ref_bias}")
+
     return home_pf_bias
+
 
 
 # Returns a 2 element list of the home team and away team's information.
@@ -408,7 +419,7 @@ def write_season_stats(season):
 # to the appropriate file in game_stats before exiting. Wait approximately a minute or so to avoid getting
 # blocked on nba_api and re-run the program. It will load the cached data and resume from there.
 if __name__ == '__main__':
-    write_season_stats('2023-24')
+    write_season_stats('2024-25')
     # TODO: Figure out how to get coaches on a more granular level than season, since mid season changes SHOULD be
     #  reflected if we decide to use coaches
     teams_coaches = commonteamroster.CommonTeamRoster(team_id='1610612749', season='2023').get_data_frames()
