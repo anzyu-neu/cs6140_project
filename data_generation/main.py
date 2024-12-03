@@ -340,7 +340,7 @@ def update_game_stats(game_id, all_game_stats):
     game_stats.insert(len(game_stats.columns), 'OPPONENT_WIN_PCT', game_stats['RECENT_WIN_PCT'][::-1].values,
                       allow_duplicates=False)
     # Project away all extra information needed for calculating features
-    return game_stats.drop(['GAME_ID', 'GAME_DATE_EST'], axis=1)
+    return game_stats.drop(['GAME_ID'], axis=1)
 
 
 # Given a list of team_ids generates a corresponding map of teams to star players.
@@ -400,7 +400,7 @@ def generate_season_stats(season: str):
                                   for game_id in all_game_ids]
     complete_season_stats = pandas.concat(complete_season_stats_list, axis=0, ignore_index=True)
     # Drops the last non linear features (teamId and TEAM_WIN_LOSSES).
-    return complete_season_stats.drop(['TEAM_WINS_LOSSES', 'GAME_LOCATION', 'TEAM_ID'], axis=1)
+    return complete_season_stats.drop(['TEAM_WINS_LOSSES', 'GAME_LOCATION'], axis=1)
 
 
 # Generates the given season and writes the data to the corresponding csv in output_data.
